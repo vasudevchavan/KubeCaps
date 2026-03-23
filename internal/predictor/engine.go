@@ -1,0 +1,235 @@
+package predictor
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/vasudevchavan/kubecaps/internal/prometheus"
+	"github.com/vasudevchavan/kubecaps/pkg/types"
+)
+
+// Engine is the main prediction engine that aggregates multiple prediction models.
+type Engine struct {
+	promClient *prometheus.Client
+	queries    *prometheus.Queries
+}
+
+// NewEngine creates a new prediction engine.
+func NewEngine(promClient *prometheus.Client) *Engine {
+	return &Engine{
+		promClient: promClient,
+		queries:    prometheus.NewQueries(),
+	}
+}
+
+// PredictResources predicts optimal resource configuration for a workload.
+func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadInfo, timeWindowHours int) (*types.Recommendation, error) {
+	end := time.Now()
+	start := end.Add(-time.Duration(timeWindowHours) * time.Hour)
+	step := time.Minute * 5
+
+	// Fetch CPU usage
+	cpuQuery := e.queries.CPUUsageTotal(workload.Namespace, workload.Name)
+	cpuData, err := e.promClient.QueryRange(ctx, cpuQuery, start, end, step)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch CPU usage: %w", err)
+	}
+
+	// Fetch memory usage
+	memQuery := e.queries.MemoryUsageTotal(workload.Namespace, workload.Name)
+	memData, err := e.promClient.QueryRange(ctx, memQuery, start, end, step)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch memory usage: %w", err)
+	}
+
+	if len(cpuData) == 0 && len(memData) == 0 {
+		return nil, fmt.Errorf("no metric data found for workload %s/%s", workload.Namespace, workload.Name)
+	}
+
+	// Fetch current requests/limits
+	cpuReq, _ := e.promClient.QueryInstant(ctx, e.queries.CPURequest(workload.Namespace, workload.Name))
+	cpuLim, _ := e.promClient.QueryInstant(ctx, e.queries.CPULimit(workload.Namespace, workload.Name))
+	memReq, _ := e.promClient.QueryInstant(ctx, e.queries.MemoryRequest(workload.Namespace, workload.Name))
+	memLim, _ := e.promClient.QueryInstant(ctx, e.queries.MemoryLimit(workload.Namespace, workload.Name))
+
+	// Run prediction models
+	cpuPrediction := e.predictMetric(cpuData)
+	memPrediction := e.predictMetric(memData)
+
+	// Recommended request = P95 of recent usage
+	// Recommended limit = max(P99, linear trend peak) with 20% headroom
+	cpuRequestRaw := cpuPrediction.p95
+	cpuLimitRaw := math.Max(cpuPrediction.p99, cpuPrediction.linearPeak) * 1.2
+	memRequestRaw := memPrediction.p95
+	memLimitRaw := math.Max(memPrediction.p99, memPrediction.linearPeak) * 1.2
+
+	// Per-replica values
+	replicas := float64(workload.Replicas)
+	if replicas < 1 {
+		replicas = 1
+	}
+	cpuRequestRaw /= replicas
+	cpuLimitRaw /= replicas
+	memRequestRaw /= replicas
+	memLimitRaw /= replicas
+
+	// Calculate confidence based on data quality
+	confidence := e.calculateConfidence(cpuData, memData, cpuPrediction, memPrediction)
+
+	// Build explanation
+	explanation := e.buildExplanation(cpuReq, cpuLim, memReq, memLim, cpuRequestRaw, cpuLimitRaw, memRequestRaw, memLimitRaw)
+
+	return &types.Recommendation{
+		WorkloadName:    workload.Name,
+		WorkloadKind:    workload.Kind,
+		Namespace:       workload.Namespace,
+		CPURequest:      formatCPU(cpuRequestRaw),
+		CPULimit:        formatCPU(cpuLimitRaw),
+		MemoryRequest:   formatMemory(memRequestRaw),
+		MemoryLimit:     formatMemory(memLimitRaw),
+		CPURequestRaw:   cpuRequestRaw,
+		CPULimitRaw:     cpuLimitRaw,
+		MemRequestRaw:   memRequestRaw,
+		MemLimitRaw:     memLimitRaw,
+		Confidence:      confidence,
+		Explanation:     explanation,
+		TimeWindowHours: timeWindowHours,
+	}, nil
+}
+
+// metricPrediction holds aggregated prediction from all models.
+type metricPrediction struct {
+	ewma       float64
+	linearPeak float64
+	p50        float64
+	p95        float64
+	p99        float64
+	trend      float64 // slope direction
+	variance   float64
+}
+
+// predictMetric runs all prediction models on a time series.
+func (e *Engine) predictMetric(data []types.DataPoint) metricPrediction {
+	values := extractValues(data)
+	if len(values) == 0 {
+		return metricPrediction{}
+	}
+
+	return metricPrediction{
+		ewma:       EWMA(values, 0.3),
+		linearPeak: LinearRegressionPeak(values),
+		p50:        Percentile(values, 50),
+		p95:        Percentile(values, 95),
+		p99:        Percentile(values, 99),
+		trend:      LinearRegressionSlope(values),
+		variance:   variance(values),
+	}
+}
+
+// calculateConfidence calculates the confidence level (0-1) of the prediction.
+func (e *Engine) calculateConfidence(cpuData, memData []types.DataPoint, cpuPred, memPred metricPrediction) float64 {
+	confidence := 1.0
+
+	// Deduct for insufficient data points
+	dataPoints := math.Min(float64(len(cpuData)), float64(len(memData)))
+	if dataPoints < 10 {
+		confidence -= 0.4
+	} else if dataPoints < 50 {
+		confidence -= 0.2
+	} else if dataPoints < 100 {
+		confidence -= 0.1
+	}
+
+	// Deduct for high variance (unstable workloads)
+	if cpuPred.variance > 0.5 {
+		confidence -= 0.15
+	}
+	if memPred.variance > 0.5 {
+		confidence -= 0.15
+	}
+
+	// Deduct if models disagree significantly
+	cpuDisagreement := math.Abs(cpuPred.ewma-cpuPred.p95) / math.Max(cpuPred.p95, 0.001)
+	if cpuDisagreement > 0.5 {
+		confidence -= 0.1
+	}
+
+	return math.Max(confidence, 0.1)
+}
+
+// buildExplanation creates a human-readable explanation of the recommendation.
+func (e *Engine) buildExplanation(cpuReq, cpuLim, memReq, memLim, recCPUReq, recCPULim, recMemReq, recMemLim float64) string {
+	explanation := "Prediction models used: Linear Regression, EWMA, Percentile Analysis (P50/P95/P99).\n"
+
+	if cpuReq > 0 {
+		cpuReqDelta := ((recCPUReq - cpuReq) / cpuReq) * 100
+		if cpuReqDelta < -10 {
+			explanation += fmt.Sprintf("CPU request can be reduced by %.0f%% (over-provisioned).\n", -cpuReqDelta)
+		} else if cpuReqDelta > 10 {
+			explanation += fmt.Sprintf("CPU request should be increased by %.0f%% (under-provisioned).\n", cpuReqDelta)
+		}
+	}
+
+	if memReq > 0 {
+		memReqDelta := ((recMemReq - memReq) / memReq) * 100
+		if memReqDelta < -10 {
+			explanation += fmt.Sprintf("Memory request can be reduced by %.0f%% (over-provisioned).\n", -memReqDelta)
+		} else if memReqDelta > 10 {
+			explanation += fmt.Sprintf("Memory request should be increased by %.0f%% (under-provisioned).\n", memReqDelta)
+		}
+	}
+
+	return explanation
+}
+
+// extractValues extracts float64 values from DataPoints.
+func extractValues(data []types.DataPoint) []float64 {
+	values := make([]float64, len(data))
+	for i, dp := range data {
+		values[i] = dp.Value
+	}
+	return values
+}
+
+// variance calculates the coefficient of variation (normalized variance).
+func variance(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	mean := 0.0
+	for _, v := range values {
+		mean += v
+	}
+	mean /= float64(len(values))
+	if mean == 0 {
+		return 0
+	}
+
+	sumSqDiff := 0.0
+	for _, v := range values {
+		diff := v - mean
+		sumSqDiff += diff * diff
+	}
+	stddev := math.Sqrt(sumSqDiff / float64(len(values)))
+	return stddev / mean // coefficient of variation
+}
+
+// formatCPU formats CPU cores to Kubernetes format (e.g., "250m" or "1.5").
+func formatCPU(cores float64) string {
+	if cores < 1.0 {
+		return fmt.Sprintf("%dm", int(cores*1000))
+	}
+	return fmt.Sprintf("%.1f", cores)
+}
+
+// formatMemory formats bytes to Kubernetes format (e.g., "128Mi", "1Gi").
+func formatMemory(bytes float64) string {
+	gi := bytes / (1024 * 1024 * 1024)
+	if gi >= 1.0 {
+		return fmt.Sprintf("%.1fGi", gi)
+	}
+	mi := bytes / (1024 * 1024)
+	return fmt.Sprintf("%.0fMi", mi)
+}
