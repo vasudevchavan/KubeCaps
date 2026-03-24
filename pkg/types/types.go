@@ -104,14 +104,25 @@ type Recommendation struct {
 	WorkloadKind    string  `json:"workloadKind"`
 	Namespace       string  `json:"namespace"`
 	CPURequest      string  `json:"cpuRequest"`      // e.g. "250m"
-	CPULimit        string  `json:"cpuLimit"`         // e.g. "500m"
-	MemoryRequest   string  `json:"memoryRequest"`    // e.g. "128Mi"
-	MemoryLimit     string  `json:"memoryLimit"`      // e.g. "256Mi"
-	CPURequestRaw   float64 `json:"cpuRequestRaw"`    // cores
-	CPULimitRaw     float64 `json:"cpuLimitRaw"`      // cores
-	MemRequestRaw   float64 `json:"memRequestRaw"`    // bytes
-	MemLimitRaw     float64 `json:"memLimitRaw"`      // bytes
-	Confidence      float64 `json:"confidence"`       // 0.0 - 1.0
+	CPULimit        string  `json:"cpuLimit"`        // e.g. "500m"
+	MemoryRequest   string  `json:"memoryRequest"`   // e.g. "128Mi"
+	MemoryLimit     string  `json:"memoryLimit"`     // e.g. "256Mi"
+	CPURequestRaw   float64 `json:"cpuRequestRaw"`   // cores
+	CPULimitRaw     float64 `json:"cpuLimitRaw"`     // cores
+	MemRequestRaw   float64 `json:"memRequestRaw"`   // bytes
+	MemLimitRaw     float64 `json:"memLimitRaw"`     // bytes
+	
+	CurrentCPURequestRaw float64 `json:"currentCpuRequestRaw"`
+	CurrentCPULimitRaw   float64 `json:"currentCpuLimitRaw"`
+	CurrentMemRequestRaw float64 `json:"currentMemRequestRaw"`
+	CurrentMemLimitRaw   float64 `json:"currentMemLimitRaw"`
+
+	CPUReqDiffPercent    float64 `json:"cpuReqDiffPercent"`
+	CPULimitDiffPercent  float64 `json:"cpuLimitDiffPercent"`
+	MemReqDiffPercent    float64 `json:"memReqDiffPercent"`
+	MemLimitDiffPercent  float64 `json:"memLimitDiffPercent"`
+
+	Confidence      float64 `json:"confidence"`      // 0.0 - 1.0
 	Explanation     string  `json:"explanation"`
 	TimeWindowHours int     `json:"timeWindowHours"`
 }

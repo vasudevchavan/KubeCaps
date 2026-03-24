@@ -27,21 +27,49 @@ func NewEngine(promClient *prometheus.Client) *Engine {
 // PredictResources predicts optimal resource configuration for a workload.
 func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadInfo, timeWindowHours int) (*types.Recommendation, error) {
 	end := time.Now()
-	start := end.Add(-time.Duration(timeWindowHours) * time.Hour)
 	step := time.Minute * 5
 
 	// Fetch CPU usage
-	cpuQuery := e.queries.CPUUsageTotal(workload.Namespace, workload.Name)
-	cpuData, err := e.promClient.QueryRange(ctx, cpuQuery, start, end, step)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch CPU usage: %w", err)
+	var cpuData, memData []types.DataPoint
+	var effectiveWindowHours int
+
+	// Evaluate time windows based on data availability: 1 Month (720h), 1 Week (168h), 1 Day (24h)
+	// If timeWindowHours is explicitly set (not 24 default or if 24 is set we still try this logic if it's for recommendation?)
+	// Actually, just try exactly in this order:
+	windowsToTry := []int{720, 168, 24}
+	// If user specifically requested a window other than the windows, we can just use it.
+	// But let's just override and use the windows logic to find max available up to the requested one, or just hardcode the 3 tiers.
+	if timeWindowHours != 24 && timeWindowHours != 720 && timeWindowHours != 168 {
+		windowsToTry = []int{timeWindowHours}
 	}
 
-	// Fetch memory usage
-	memQuery := e.queries.MemoryUsageTotal(workload.Namespace, workload.Name)
-	memData, err := e.promClient.QueryRange(ctx, memQuery, start, end, step)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch memory usage: %w", err)
+	for _, w := range windowsToTry {
+		start := end.Add(-time.Duration(w) * time.Hour)
+		cpuQ := e.queries.CPUUsageTotal(workload.Namespace, workload.Name)
+		cpuD, errC := e.promClient.QueryRange(ctx, cpuQ, start, end, step)
+		
+		memQ := e.queries.MemoryUsageTotal(workload.Namespace, workload.Name)
+		memD, errM := e.promClient.QueryRange(ctx, memQ, start, end, step)
+
+		if errC == nil && errM == nil && len(cpuD) > 0 && len(memD) > 0 {
+			// Calculate actual data duration available
+			actualDuration := end.Sub(cpuD[0].Timestamp).Hours()
+			if w == 720 && actualDuration >= 168 { // We have more than a week, consider it 1 Month tier
+				cpuData, memData = cpuD, memD
+				effectiveWindowHours = 720
+				break
+			} else if w == 168 && actualDuration >= 24 { // We have more than a day, consider it 1 Week tier
+				cpuData, memData = cpuD, memD
+				effectiveWindowHours = 168
+				break
+			} else if w == 24 {
+				cpuData, memData = cpuD, memD
+				effectiveWindowHours = 24
+				break
+			}
+			// If we asked for 720 but only got 2 days, we will loop to 168.
+			// If we asked for 168 but only got 12 hours, we will loop to 24.
+		}
 	}
 
 	if len(cpuData) == 0 && len(memData) == 0 {
@@ -54,16 +82,42 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 	memReq, _ := e.promClient.QueryInstant(ctx, e.queries.MemoryRequest(workload.Namespace, workload.Name))
 	memLim, _ := e.promClient.QueryInstant(ctx, e.queries.MemoryLimit(workload.Namespace, workload.Name))
 
+	// Fetch OOM and Throttling metrics for Feedback Loop
+	oomQ := e.queries.OOMEvents(workload.Namespace, workload.Name)
+	oomVal, _ := e.promClient.QueryInstant(ctx, oomQ)
+	hasOOM := oomVal > 0
+
+	throttleQ := e.queries.CPUThrottling(workload.Namespace, workload.Name)
+	throttleVal, _ := e.promClient.QueryInstant(ctx, throttleQ)
+	hasThrottling := throttleVal > 5.0 // > 5% throttling is significant
+
 	// Run prediction models
 	cpuPrediction := e.predictMetric(cpuData)
 	memPrediction := e.predictMetric(memData)
 
-	// Recommended request = P95 of recent usage
-	// Recommended limit = max(P99, linear trend peak) with 20% headroom
-	cpuRequestRaw := cpuPrediction.p95
-	cpuLimitRaw := math.Max(cpuPrediction.p99, cpuPrediction.linearPeak) * 1.2
-	memRequestRaw := memPrediction.p95
-	memLimitRaw := math.Max(memPrediction.p99, memPrediction.linearPeak) * 1.2
+	// Forecast Peak usage for next 24h (288 5-minute points)
+	cpuForecastPeak := HoltWintersPeak(cpuPrediction.values, 288)
+	memForecastPeak := HoltWintersPeak(memPrediction.values, 288)
+
+	// Optimization Layer: Cost vs Risk
+	// Define risk penalties. Heavily amplify if Prometheus feedback loop detected issues.
+	lambdaCPU := 10.0
+	lambdaMem := 50.0
+	if hasThrottling {
+		lambdaCPU = 100.0 // Heavy penalty for CPU risk
+	}
+	if hasOOM {
+		lambdaMem = 500.0 // Huge penalty for OOM risk
+	}
+
+	// Optimize Request: Grid search from P50 to 1.2 * Forecast Peak
+	// CPU price weight = 1.0/core, Mem price weight = 1.0/GB
+	cpuRequestRaw := optimizeRequest(cpuPrediction.values, cpuPrediction.p50, cpuForecastPeak*1.2, 1.0, lambdaCPU)
+	memRequestRaw := optimizeRequest(memPrediction.values, memPrediction.p50, memForecastPeak*1.2, 1.0/(1024*1024*1024), lambdaMem)
+
+	// Limits
+	cpuLimitRaw := math.Max(cpuPrediction.p99, cpuForecastPeak) * 1.2
+	memLimitRaw := math.Max(memPrediction.p99, memForecastPeak) * 1.2
 
 	// Per-replica values
 	replicas := float64(workload.Replicas)
@@ -81,6 +135,21 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 	// Build explanation
 	explanation := e.buildExplanation(cpuReq, cpuLim, memReq, memLim, cpuRequestRaw, cpuLimitRaw, memRequestRaw, memLimitRaw)
 
+	// Calculate diff percentages
+	var cpuReqDiff, cpuLimDiff, memReqDiff, memLimDiff float64
+	if cpuReq > 0 {
+		cpuReqDiff = ((cpuRequestRaw - cpuReq) / cpuReq) * 100
+	}
+	if cpuLim > 0 {
+		cpuLimDiff = ((cpuLimitRaw - cpuLim) / cpuLim) * 100
+	}
+	if memReq > 0 {
+		memReqDiff = ((memRequestRaw - memReq) / memReq) * 100
+	}
+	if memLim > 0 {
+		memLimDiff = ((memLimitRaw - memLim) / memLim) * 100
+	}
+
 	return &types.Recommendation{
 		WorkloadName:    workload.Name,
 		WorkloadKind:    workload.Kind,
@@ -93,9 +162,20 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 		CPULimitRaw:     cpuLimitRaw,
 		MemRequestRaw:   memRequestRaw,
 		MemLimitRaw:     memLimitRaw,
+
+		CurrentCPURequestRaw: cpuReq,
+		CurrentCPULimitRaw:   cpuLim,
+		CurrentMemRequestRaw: memReq,
+		CurrentMemLimitRaw:   memLim,
+
+		CPUReqDiffPercent:   cpuReqDiff,
+		CPULimitDiffPercent: cpuLimDiff,
+		MemReqDiffPercent:   memReqDiff,
+		MemLimitDiffPercent: memLimDiff,
+
 		Confidence:      confidence,
 		Explanation:     explanation,
-		TimeWindowHours: timeWindowHours,
+		TimeWindowHours: effectiveWindowHours,
 	}, nil
 }
 
@@ -108,6 +188,7 @@ type metricPrediction struct {
 	p99        float64
 	trend      float64 // slope direction
 	variance   float64
+	values     []float64 // the filtered raw values
 }
 
 // predictMetric runs all prediction models on a time series.
@@ -117,14 +198,21 @@ func (e *Engine) predictMetric(data []types.DataPoint) metricPrediction {
 		return metricPrediction{}
 	}
 
+	// Layer 1: Robust Statistical Baseline (Filter outliers)
+	filteredValues := filterOutliersIQR(values)
+	if len(filteredValues) < 4 {
+		filteredValues = values // Fallback if too few points
+	}
+
 	return metricPrediction{
-		ewma:       EWMA(values, 0.3),
-		linearPeak: LinearRegressionPeak(values),
-		p50:        Percentile(values, 50),
-		p95:        Percentile(values, 95),
-		p99:        Percentile(values, 99),
-		trend:      LinearRegressionSlope(values),
-		variance:   variance(values),
+		ewma:       EWMA(filteredValues, 0.3),
+		linearPeak: LinearRegressionPeak(filteredValues),
+		p50:        Percentile(filteredValues, 50),
+		p95:        Percentile(filteredValues, 95),
+		p99:        Percentile(filteredValues, 99),
+		trend:      LinearRegressionSlope(filteredValues),
+		variance:   variance(filteredValues),
+		values:     filteredValues,
 	}
 }
 
@@ -161,7 +249,7 @@ func (e *Engine) calculateConfidence(cpuData, memData []types.DataPoint, cpuPred
 
 // buildExplanation creates a human-readable explanation of the recommendation.
 func (e *Engine) buildExplanation(cpuReq, cpuLim, memReq, memLim, recCPUReq, recCPULim, recMemReq, recMemLim float64) string {
-	explanation := "Prediction models used: Linear Regression, EWMA, Percentile Analysis (P50/P95/P99).\n"
+	explanation := "Prediction models used: IQR Filtering, Holt-Winters Peak Forecasting, Log-Normal Probabilistic Optimization.\n"
 
 	if cpuReq > 0 {
 		cpuReqDelta := ((recCPUReq - cpuReq) / cpuReq) * 100
@@ -170,6 +258,8 @@ func (e *Engine) buildExplanation(cpuReq, cpuLim, memReq, memLim, recCPUReq, rec
 		} else if cpuReqDelta > 10 {
 			explanation += fmt.Sprintf("CPU request should be increased by %.0f%% (under-provisioned).\n", cpuReqDelta)
 		}
+	} else {
+		explanation += "CPU request is not currently set.\n"
 	}
 
 	if memReq > 0 {
@@ -179,6 +269,8 @@ func (e *Engine) buildExplanation(cpuReq, cpuLim, memReq, memLim, recCPUReq, rec
 		} else if memReqDelta > 10 {
 			explanation += fmt.Sprintf("Memory request should be increased by %.0f%% (under-provisioned).\n", memReqDelta)
 		}
+	} else {
+		explanation += "Memory request is not currently set.\n"
 	}
 
 	return explanation

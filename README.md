@@ -9,6 +9,8 @@ KubeCaps is a CLI tool designed to help Kubernetes operators optimize their work
 ## 🚀 Key Features
 
 - **🔍 Resource Prediction Engine**: Uses pure Go implementations of Linear Regression, EWMA (Exponential Weighted Moving Average), and Percentile Analysis (P50/P95/P99) to recommend optimal CPU/Memory requests and limits.
+- **📊 Adaptive Data Analysis**: Automatically identifies and pulls the optimal historical data window (up to 1 Month, adjusting to 1 Week or 1 Day) depending on Prometheus data availability.
+- **💡 Contextual Recommendations**: Displays current resource allocations alongside recommendations, computing exact over-provisioned or under-provisioned percentage differences to clarify optimization impact.
 - **⚖️ Autoscaling Auditor**: Evaluates HPA, VPA, and KEDA configurations against actual usage patterns to detect scaling lag, oscillation, and target mismatches.
 - **🏆 Optimization Scoring**: Provides a 1–10 "Optimization Score" and literal grades (A+ to F) for each component and the overall workload.
 - **🚨 Risk Detection**: Automatically flags OOM risks, CPU throttling, over-provisioning, and scaling bottlenecks.

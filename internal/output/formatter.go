@@ -24,15 +24,21 @@ func PrintRecommendation(rec *types.Recommendation) {
 
 	// CPU
 	label.Print("     CPU Request:  ")
-	good.Println(rec.CPURequest)
+	good.Printf("%-10s", rec.CPURequest)
+	formatDiff(rec.CurrentCPURequestRaw, rec.CPURequestRaw, rec.CPUReqDiffPercent)
+	
 	label.Print("     CPU Limit:    ")
-	good.Println(rec.CPULimit)
+	good.Printf("%-10s", rec.CPULimit)
+	formatDiff(rec.CurrentCPULimitRaw, rec.CPULimitRaw, rec.CPULimitDiffPercent)
 
 	// Memory
 	label.Print("     Mem Request:  ")
-	good.Println(rec.MemoryRequest)
+	good.Printf("%-10s", rec.MemoryRequest)
+	formatDiff(rec.CurrentMemRequestRaw, rec.MemRequestRaw, rec.MemReqDiffPercent)
+
 	label.Print("     Mem Limit:    ")
-	good.Println(rec.MemoryLimit)
+	good.Printf("%-10s", rec.MemoryLimit)
+	formatDiff(rec.CurrentMemLimitRaw, rec.MemLimitRaw, rec.MemLimitDiffPercent)
 
 	fmt.Println()
 
@@ -61,6 +67,46 @@ func PrintRecommendation(rec *types.Recommendation) {
 
 	fmt.Println()
 }
+
+// formatDiff prints the current value and percentage diff.
+func formatDiff(current, rec, diffPct float64) {
+	dim := color.New(color.FgHiBlack)
+	up := color.New(color.FgRed)
+	down := color.New(color.FgGreen)
+	
+	if current == 0 {
+		dim.Println("(currently not set)")
+		return
+	}
+
+	if diffPct > 10 {
+		up.Printf("(current: %v, +%.0f%%)\n", formatValue(current), diffPct)
+	} else if diffPct < -10 {
+		down.Printf("(current: %v, %.0f%%)\n", formatValue(current), diffPct)
+	} else {
+		dim.Printf("(current: %v, ~%.0f%%)\n", formatValue(current), diffPct)
+	}
+}
+
+// formatValue formats a raw CPU/Mem float to string logic similar to engine.go
+func formatValue(val float64) string {
+	// If it's small, it's CPU, but memory is in bytes, so > 1M usually
+	if val < 1000 {
+		// CPU logic
+		if val < 1.0 {
+			return fmt.Sprintf("%dm", int(val*1000))
+		}
+		return fmt.Sprintf("%.1f", val)
+	}
+	// Memory logic
+	gi := val / (1024 * 1024 * 1024)
+	if gi >= 1.0 {
+		return fmt.Sprintf("%.1fGi", gi)
+	}
+	mi := val / (1024 * 1024)
+	return fmt.Sprintf("%.0fMi", mi)
+}
+
 
 // PrintEvaluationResult prints a complete evaluation result.
 func PrintEvaluationResult(result *types.EvaluationResult) {
