@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 	"github.com/vasudevchavan/kubecaps/internal/k8s"
 	"github.com/vasudevchavan/kubecaps/internal/output"
 	"github.com/vasudevchavan/kubecaps/internal/predictor"
@@ -63,6 +64,9 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		if globalFlags.OutputFormat == "json" {
 			data, _ := json.MarshalIndent(rec, "", "  ")
 			fmt.Println(string(data))
+		} else if globalFlags.OutputFormat == "yaml" {
+			data, _ := yaml.Marshal(rec)
+			fmt.Println(string(data))
 		} else {
 			output.PrintRecommendation(rec)
 		}
@@ -93,6 +97,10 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		if globalFlags.OutputFormat == "json" {
 			data, _ := json.MarshalIndent(rec, "", "  ")
 			fmt.Println(string(data))
+		} else if globalFlags.OutputFormat == "yaml" {
+			data, _ := yaml.Marshal(rec)
+			fmt.Println(string(data))
+			fmt.Println("---")
 		} else {
 			output.PrintRecommendation(rec)
 		}

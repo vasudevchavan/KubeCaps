@@ -54,15 +54,45 @@ func PrintRecommendation(rec *types.Recommendation) {
 	// Time window
 	label.Printf("  ⏱  Time Window:  %dh\n", rec.TimeWindowHours)
 
-	// Explanation
-	if rec.Explanation != "" {
+	// Explanation / Insights
+	if len(rec.Insights) > 0 {
 		fmt.Println()
-		label.Println("  💡 Analysis:")
-		for _, line := range strings.Split(rec.Explanation, "\n") {
-			if line != "" {
-				fmt.Printf("     %s\n", line)
-			}
+		label.Println("  💡 Analysis & Optimization Strategy:")
+		infoColor := color.New(color.FgCyan)
+		
+		infoColor.Printf("     Classification: %s\n", rec.Type)
+		if rec.Recommendations.HPA.Enabled {
+			infoColor.Printf("     [HPA] Enable with minReplicas=%d, maxReplicas=%d on CPU=%s\n", rec.Recommendations.HPA.MinReplicas, rec.Recommendations.HPA.MaxReplicas, rec.Recommendations.HPA.TargetValue)
+		} else {
+			dim := color.New(color.FgHiBlack)
+			dim.Println("     [HPA] Disabled (Workload is steady, no high-variance scaling needed)")
 		}
+
+		infoColor.Printf("     [VPA] Set Mode=%s (CPU Buffers = %s, Mem Buffers = %s)\n", rec.Recommendations.VPA.Mode, rec.Recommendations.VPA.CPU, rec.Recommendations.VPA.Memory)
+
+		if rec.Recommendations.KEDA.Enabled {
+			infoColor.Printf("     [KEDA] Recommend Trigger='%s' at threshold %s (cooldown=%ds)\n", rec.Recommendations.KEDA.Trigger, rec.Recommendations.KEDA.Threshold, rec.Recommendations.KEDA.CooldownPeriod)
+		}
+
+		fmt.Println()
+		for _, ins := range rec.Insights {
+			fmt.Printf("     • %s\n", ins)
+		}
+	}
+
+	// Risk Profile
+	fmt.Println()
+	label.Println("  ⚠️  Risk Profile:")
+	riskColor := color.New(color.FgGreen)
+	if rec.Risk.Level == "high" {
+		riskColor = color.New(color.FgRed, color.Bold)
+	} else if rec.Risk.Level == "medium" {
+		riskColor = color.New(color.FgMagenta)
+	}
+	
+	riskColor.Printf("     Level: %s\n", rec.Risk.Level)
+	for _, note := range rec.Risk.Notes {
+		color.New(color.FgHiBlack).Printf("     - %s\n", note)
 	}
 
 	fmt.Println()

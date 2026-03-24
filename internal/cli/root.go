@@ -21,7 +21,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&globalFlags.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file (default: auto-detect)")
 	rootCmd.PersistentFlags().StringVar(&globalFlags.PrometheusURL, "prometheus-url", "", "Prometheus server URL (required)")
 	rootCmd.PersistentFlags().StringVarP(&globalFlags.Namespace, "namespace", "n", "default", "Kubernetes namespace to analyze")
-	rootCmd.PersistentFlags().StringVarP(&globalFlags.OutputFormat, "output", "o", "table", "Output format: table, json")
+	rootCmd.PersistentFlags().StringVarP(&globalFlags.OutputFormat, "output", "o", "table", "Output format: table, json, yaml")
 	rootCmd.PersistentFlags().IntVar(&globalFlags.TimeWindowHours, "time-window", 24, "Time window in hours for metric analysis")
 }
 

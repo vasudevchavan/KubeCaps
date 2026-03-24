@@ -98,11 +98,65 @@ type KEDAConfig struct {
 	Found           bool          `json:"found"`
 }
 
+// WorkloadType defines the behavioral classification of a workload.
+type WorkloadType string
+
+const (
+	WorkloadTypeSteady      WorkloadType = "Steady"
+	WorkloadTypeElastic     WorkloadType = "Elastic"
+	WorkloadTypeBursty      WorkloadType = "Bursty"
+	WorkloadTypeEventDriven WorkloadType = "Event-driven"
+)
+
+// HPASuggestion holds the suggested HPA configuration.
+type HPASuggestion struct {
+	Enabled      bool   `json:"enabled"`
+	TargetMetric string `json:"targetMetric,omitempty"`
+	TargetValue  string `json:"targetValue,omitempty"`
+	MinReplicas  int32  `json:"minReplicas,omitempty"`
+	MaxReplicas  int32  `json:"maxReplicas,omitempty"`
+}
+
+// VPASuggestion holds the suggested VPA configuration.
+type VPASuggestion struct {
+	Mode   string `json:"mode"`
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
+}
+
+// KEDASuggestion holds the suggested KEDA configuration.
+type KEDASuggestion struct {
+	Enabled        bool   `json:"enabled"`
+	Trigger        string `json:"trigger,omitempty"`
+	Threshold      string `json:"threshold,omitempty"`
+	CooldownPeriod int32  `json:"cooldownPeriod,omitempty"`
+}
+
+// RiskProfile holds risk assessment for the recommendations.
+type RiskProfile struct {
+	Level string   `json:"level" yaml:"level"`
+	Notes []string `json:"notes" yaml:"notes"`
+}
+
+// AutoscalingRecommendations groups the three autoscalers.
+type AutoscalingRecommendations struct {
+	HPA  HPASuggestion  `json:"hpa" yaml:"hpa"`
+	VPA  VPASuggestion  `json:"vpa" yaml:"vpa"`
+	KEDA KEDASuggestion `json:"keda" yaml:"keda"`
+}
+
 // Recommendation holds a resource or autoscaling recommendation.
 type Recommendation struct {
-	WorkloadName    string  `json:"workloadName"`
-	WorkloadKind    string  `json:"workloadKind"`
-	Namespace       string  `json:"namespace"`
+	WorkloadName    string       `json:"workload" yaml:"workload"`
+	WorkloadKind    string       `json:"workloadKind" yaml:"workloadKind"`
+	Namespace       string       `json:"namespace" yaml:"namespace"`
+	Type            WorkloadType `json:"type" yaml:"type"`
+
+	// Sub-recommendations for the unified model
+	Recommendations AutoscalingRecommendations `json:"recommendations" yaml:"recommendations"`
+	
+	Insights []string    `json:"insights" yaml:"insights"`
+	Risk     RiskProfile `json:"risk" yaml:"risk"`
 	CPURequest      string  `json:"cpuRequest"`      // e.g. "250m"
 	CPULimit        string  `json:"cpuLimit"`        // e.g. "500m"
 	MemoryRequest   string  `json:"memoryRequest"`   // e.g. "128Mi"

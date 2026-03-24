@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vasudevchavan/kubecaps/internal/prometheus"
+	"github.com/vasudevchavan/kubecaps/internal/recommender"
 	"github.com/vasudevchavan/kubecaps/pkg/types"
 )
 
@@ -91,9 +92,17 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 	throttleVal, _ := e.promClient.QueryInstant(ctx, throttleQ)
 	hasThrottling := throttleVal > 5.0 // > 5% throttling is significant
 
+	// Fetch RPS for classification using effective window
+	startEffective := end.Add(-time.Duration(effectiveWindowHours) * time.Hour)
+	rpsQ := e.queries.RequestRate(workload.Namespace, workload.Name)
+	rpsData, _ := e.promClient.QueryRange(ctx, rpsQ, startEffective, end, step)
+
 	// Run prediction models
 	cpuPrediction := e.predictMetric(cpuData)
 	memPrediction := e.predictMetric(memData)
+	
+	// Classify workload behavior
+	workloadType := e.ClassifyWorkload(cpuPrediction, extractValues(rpsData))
 
 	// Forecast Peak usage for next 24h (288 5-minute points)
 	cpuForecastPeak := HoltWintersPeak(cpuPrediction.values, 288)
@@ -150,10 +159,55 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 		memLimDiff = ((memLimitRaw - memLim) / memLim) * 100
 	}
 
+	// Recommender generation
+	hpaRec := recommender.GenerateHPA(workloadType, cpuPrediction.p50, cpuForecastPeak, workload.Replicas, "80%")
+	vpaRec := recommender.GenerateVPA(cpuRequestRaw, memRequestRaw, false, false) 
+	kedaRec := recommender.GenerateKEDA(workloadType, false, false, 0)
+
+	// Conflict Coordinator
+	archInsights := recommender.ResolveConflicts(&hpaRec, &vpaRec, &kedaRec)
+	
+	// Format Insights
+	insights := archInsights
+	if cpuReqDiff < -20 {
+		insights = append(insights, fmt.Sprintf("CPU request can be reduced by %.0f%% (over-provisioned).", math.Abs(cpuReqDiff)))
+	}
+	if memReqDiff < -20 {
+		insights = append(insights, fmt.Sprintf("Memory request can be reduced by %.0f%% (over-provisioned).", math.Abs(memReqDiff)))
+	}
+
+	// Calculate Risk
+	riskLevel := "low"
+	var riskNotes []string
+	if hasOOM {
+		riskLevel = "high"
+		riskNotes = append(riskNotes, "Critical OOMs detected: Do not constrain memory scaling.")
+	}
+	if hasThrottling {
+		if riskLevel != "high" {
+			riskLevel = "medium"
+		}
+		riskNotes = append(riskNotes, "CPU Throttling detected: Scaling up limits rapidly.")
+	}
+	if len(riskNotes) == 0 {
+		riskNotes = append(riskNotes, "Safe to apply gradually")
+	}
+
 	return &types.Recommendation{
 		WorkloadName:    workload.Name,
 		WorkloadKind:    workload.Kind,
 		Namespace:       workload.Namespace,
+		Type:            workloadType,
+		Recommendations: types.AutoscalingRecommendations{
+			HPA:  hpaRec,
+			VPA:  vpaRec,
+			KEDA: kedaRec,
+		},
+		Insights:        insights,
+		Risk: types.RiskProfile{
+			Level: riskLevel,
+			Notes: riskNotes,
+		},
 		CPURequest:      formatCPU(cpuRequestRaw),
 		CPULimit:        formatCPU(cpuLimitRaw),
 		MemoryRequest:   formatMemory(memRequestRaw),
@@ -306,6 +360,37 @@ func variance(values []float64) float64 {
 	}
 	stddev := math.Sqrt(sumSqDiff / float64(len(values)))
 	return stddev / mean // coefficient of variation
+}
+
+// ClassifyWorkload determines the behavioral type of the workload.
+func (e *Engine) ClassifyWorkload(cpuPred metricPrediction, rpsValues []float64) types.WorkloadType {
+	cv := cpuPred.variance // Coefficient of Variation
+	
+	hasTraffic := false
+	for _, r := range rpsValues {
+		if r > 0.1 {
+			hasTraffic = true
+			break
+		}
+	}
+
+	// 1. If variance is very low, it's Steady
+	if cv < 0.20 {
+		return types.WorkloadTypeSteady
+	}
+
+	// 2. If it has traffic and moderate/high variance, it's Elastic
+	if hasTraffic && cv >= 0.20 && cv < 0.80 {
+		return types.WorkloadTypeElastic
+	}
+
+	// 3. If variance is extremely high, it's Bursty
+	if cv >= 0.80 {
+		return types.WorkloadTypeBursty
+	}
+
+	// Default fallback if no traffic but high variance (maybe event-driven, but we lack queue metrics here)
+	return types.WorkloadTypeBursty
 }
 
 // formatCPU formats CPU cores to Kubernetes format (e.g., "250m" or "1.5").

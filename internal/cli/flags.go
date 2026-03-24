@@ -22,8 +22,8 @@ func (f *GlobalFlags) Validate() error {
 	if f.TimeWindowHours <= 0 {
 		return fmt.Errorf("--time-window must be positive")
 	}
-	if f.OutputFormat != "table" && f.OutputFormat != "json" {
-		return fmt.Errorf("--output must be 'table' or 'json'")
+	if f.OutputFormat != "table" && f.OutputFormat != "json" && f.OutputFormat != "yaml" {
+		return fmt.Errorf("--output must be 'table', 'json', or 'yaml'")
 	}
 	return nil
 }

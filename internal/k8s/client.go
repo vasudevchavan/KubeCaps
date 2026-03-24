@@ -9,6 +9,7 @@ import (
 	"github.com/vasudevchavan/kubecaps/pkg/types"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -203,9 +204,12 @@ func (c *Client) GetWorkload(ctx context.Context, namespace, name string) (*type
 				return c.GetDaemonSet(ctx, namespace, owner.Name)
 			}
 		}
+		// Fallback: If no recognized owner is found, treat the Pod itself as the workload (e.g. static pods).
+		w := podToWorkloadInfo(pod)
+		return &w, nil
 	}
 
-	return nil, fmt.Errorf("workload %s not found in namespace %s (tried Deployment, StatefulSet, DaemonSet, and Pod owner resolution)", name, namespace)
+	return nil, fmt.Errorf("workload %s not found in namespace %s (tried Deployment, StatefulSet, DaemonSet, Pod owner resolution, and raw Pod)", name, namespace)
 }
 
 func deploymentToWorkloadInfo(d *appsv1.Deployment) types.WorkloadInfo {
@@ -243,5 +247,15 @@ func daemonSetToWorkloadInfo(d *appsv1.DaemonSet) types.WorkloadInfo {
 		Kind:      "DaemonSet",
 		Labels:    d.Labels,
 		Replicas:  d.Status.DesiredNumberScheduled,
+	}
+}
+
+func podToWorkloadInfo(p *corev1.Pod) types.WorkloadInfo {
+	return types.WorkloadInfo{
+		Name:      p.Name,
+		Namespace: p.Namespace,
+		Kind:      "Pod",
+		Labels:    p.Labels,
+		Replicas:  1,
 	}
 }
