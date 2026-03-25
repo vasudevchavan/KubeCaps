@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conflict-worker
+  namespace: demo
+  labels:
+    app: conflict-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: conflict-worker
+  template:
+    metadata:
+      labels:
+        app: conflict-worker
+    spec:
+      containers:
+      - name: worker
+        image: busybox
+        command: ["sh", "-c", "sleep 3600"]
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "128Mi"
+---
+# HPA for Horizontal Scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: conflict-hpa
+  namespace: demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: conflict-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+# VPA with Auto mode (Conflict with HPA)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: conflict-vpa
+  namespace: demo
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: conflict-worker
+  updatePolicy:
+    updateMode: "Auto"
+---
+# KEDA with CPU trigger (Conflict with HPA)
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: conflict-keda
+  namespace: demo
+spec:
+  scaleTargetRef:
+    name: conflict-worker
+  triggers:
+  - type: cpu
+    metadata:
+      value: "50"

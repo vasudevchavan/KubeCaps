@@ -176,9 +176,22 @@ type Recommendation struct {
 	MemReqDiffPercent    float64 `json:"memReqDiffPercent"`
 	MemLimitDiffPercent  float64 `json:"memLimitDiffPercent"`
 
-	Confidence      float64 `json:"confidence"`      // 0.0 - 1.0
-	Explanation     string  `json:"explanation"`
-	TimeWindowHours int     `json:"timeWindowHours"`
+	Confidence      float64            `json:"confidence"`      // 0.0 - 1.0
+	Explanation     string             `json:"explanation"`
+	TimeWindowHours int                `json:"timeWindowHours"`
+	Calculation     CalculationDetails `json:"calculation,omitempty"`
+}
+
+// CalculationDetails holds the math behind the recommendation.
+type CalculationDetails struct {
+	CPUPenalty      float64 `json:"cpuPenalty"`
+	MemPenalty      float64 `json:"memPenalty"`
+	CPUBaseline     float64 `json:"cpuBaseline"`
+	MemBaseline     float64 `json:"memBaseline"`
+	CPUForecastPeak float64 `json:"cpuForecastPeak"`
+	MemForecastPeak float64 `json:"memForecastPeak"`
+	CPUBuffer       float64 `json:"cpuBuffer"`
+	MemBuffer       float64 `json:"memBuffer"`
 }
 
 // Insight represents a single actionable insight from evaluation.

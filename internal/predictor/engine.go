@@ -15,13 +15,15 @@ import (
 type Engine struct {
 	promClient *prometheus.Client
 	queries    *prometheus.Queries
+	config     types.Config
 }
 
 // NewEngine creates a new prediction engine.
-func NewEngine(promClient *prometheus.Client) *Engine {
+func NewEngine(promClient *prometheus.Client, config types.Config) *Engine {
 	return &Engine{
 		promClient: promClient,
 		queries:    prometheus.NewQueries(),
+		config:     config,
 	}
 }
 
@@ -29,6 +31,8 @@ func NewEngine(promClient *prometheus.Client) *Engine {
 func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadInfo, timeWindowHours int) (*types.Recommendation, error) {
 	end := time.Now()
 	step := time.Minute * 5
+
+	opt := e.config.Optimization
 
 	// Fetch CPU usage
 	var cpuData, memData []types.DataPoint
@@ -88,6 +92,7 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 	oomVal, _ := e.promClient.QueryInstant(ctx, oomQ)
 	hasOOM := oomVal > 0
 
+	// Fetch CPU Throttling
 	throttleQ := e.queries.CPUThrottling(workload.Namespace, workload.Name)
 	throttleVal, _ := e.promClient.QueryInstant(ctx, throttleQ)
 	hasThrottling := throttleVal > 5.0 // > 5% throttling is significant
@@ -109,24 +114,35 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 	memForecastPeak := HoltWintersPeak(memPrediction.values, 288)
 
 	// Optimization Layer: Cost vs Risk
-	// Define risk penalties. Heavily amplify if Prometheus feedback loop detected issues.
-	lambdaCPU := 10.0
-	lambdaMem := 50.0
+	lambdaCPU := opt.CPURiskPenalty * opt.LatencySensitivity
+	lambdaMem := opt.MemoryRiskPenalty
+	
+	// Amplify for workload behavior
+	if workloadType == types.WorkloadTypeBursty {
+		lambdaCPU *= opt.BurstinessWeight
+		lambdaMem *= opt.BurstinessWeight
+	}
+
 	if hasThrottling {
-		lambdaCPU = 100.0 // Heavy penalty for CPU risk
+		lambdaCPU *= opt.ThrottlingMultiplier
 	}
 	if hasOOM {
-		lambdaMem = 500.0 // Huge penalty for OOM risk
+		lambdaMem *= opt.OOMMultiplier
 	}
 
-	// Optimize Request: Grid search from P50 to 1.2 * Forecast Peak
-	// CPU price weight = 1.0/core, Mem price weight = 1.0/GB
-	cpuRequestRaw := optimizeRequest(cpuPrediction.values, cpuPrediction.p50, cpuForecastPeak*1.2, 1.0, lambdaCPU)
-	memRequestRaw := optimizeRequest(memPrediction.values, memPrediction.p50, memForecastPeak*1.2, 1.0/(1024*1024*1024), lambdaMem)
+	// Calculate target baselines using configured percentiles
+	cpuBaseline := Percentile(cpuPrediction.values, opt.TargetCPUPercentile*100)
+	memBaseline := Percentile(memPrediction.values, opt.TargetMemoryPercentile*100)
 
-	// Limits
-	cpuLimitRaw := math.Max(cpuPrediction.p99, cpuForecastPeak) * 1.2
-	memLimitRaw := math.Max(memPrediction.p99, memForecastPeak) * 1.2
+	// Optimize Request: Grid search from Baseline to Buffer * Forecast Peak
+	// Use ScalingSensitivity to adjust the search range or penalty? 
+	// For now, let's use it to amplify the buffer.
+	cpuRequestRaw := optimizeRequest(cpuPrediction.values, cpuBaseline, cpuForecastPeak*opt.BufferMultiplier*opt.ScalingSensitivity, opt.CPUWeight, lambdaCPU)
+	memRequestRaw := optimizeRequest(memPrediction.values, memBaseline, memForecastPeak*opt.MemorySafetyMargin*opt.ScalingSensitivity, opt.MemoryWeight/(1024*1024*1024), lambdaMem)
+
+	// Limits: Apply specialized margins and startup buffer
+	cpuLimitRaw := math.Max(cpuPrediction.p99, cpuForecastPeak) * opt.BufferMultiplier * opt.StartupBufferMultiplier
+	memLimitRaw := math.Max(memPrediction.p99, memForecastPeak) * opt.MemorySafetyMargin * opt.StartupBufferMultiplier
 
 	// Per-replica values
 	replicas := float64(workload.Replicas)
@@ -137,6 +153,24 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 	cpuLimitRaw /= replicas
 	memRequestRaw /= replicas
 	memLimitRaw /= replicas
+
+	// Apply Minimum Bounds
+	// MinCPU is in millicores (float64)
+	if cpuRequestRaw < (opt.MinCPU / 1000.0) {
+		cpuRequestRaw = opt.MinCPU / 1000.0
+	}
+	if cpuLimitRaw < cpuRequestRaw {
+		cpuLimitRaw = cpuRequestRaw
+	}
+
+	// MinMemory is in MB (float64)
+	minMemBytes := opt.MinMemory * 1024 * 1024
+	if memRequestRaw < minMemBytes {
+		memRequestRaw = minMemBytes
+	}
+	if memLimitRaw < memRequestRaw {
+		memLimitRaw = memRequestRaw
+	}
 
 	// Calculate confidence based on data quality
 	confidence := e.calculateConfidence(cpuData, memData, cpuPrediction, memPrediction)
@@ -160,7 +194,7 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 	}
 
 	// Recommender generation
-	hpaRec := recommender.GenerateHPA(workloadType, cpuPrediction.p50, cpuForecastPeak, workload.Replicas, "80%")
+	hpaRec := recommender.GenerateHPA(workloadType, cpuPrediction.p50, cpuForecastPeak, workload.Replicas, hasThrottling)
 	vpaRec := recommender.GenerateVPA(cpuRequestRaw, memRequestRaw, false, false) 
 	kedaRec := recommender.GenerateKEDA(workloadType, false, false, 0)
 
@@ -220,7 +254,7 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 		CurrentCPURequestRaw: cpuReq,
 		CurrentCPULimitRaw:   cpuLim,
 		CurrentMemRequestRaw: memReq,
-		CurrentMemLimitRaw:   memLim,
+		CurrentMemLimitRaw:   memReq,
 
 		CPUReqDiffPercent:   cpuReqDiff,
 		CPULimitDiffPercent: cpuLimDiff,
@@ -230,6 +264,16 @@ func (e *Engine) PredictResources(ctx context.Context, workload types.WorkloadIn
 		Confidence:      confidence,
 		Explanation:     explanation,
 		TimeWindowHours: effectiveWindowHours,
+		Calculation: types.CalculationDetails{
+			CPUPenalty:      lambdaCPU,
+			MemPenalty:      lambdaMem,
+			CPUBaseline:     cpuBaseline,
+			MemBaseline:     memBaseline,
+			CPUForecastPeak: cpuForecastPeak,
+			MemForecastPeak: memForecastPeak,
+			CPUBuffer:       opt.BufferMultiplier,
+			MemBuffer:       opt.MemorySafetyMargin,
+		},
 	}, nil
 }
 

@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keda-worker
+  namespace: demo
+  labels:
+    app: keda-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keda-worker
+  template:
+    metadata:
+      labels:
+        app: keda-worker
+    spec:
+      containers:
+      - name: worker
+        image: busybox
+        command: ["sh", "-c", "sleep 3600"]
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: keda-worker-scaler
+  namespace: demo
+spec:
+  scaleTargetRef:
+    name: keda-worker
+  pollingInterval: 30
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus:9090
+      metricName: http_requests_total
+      threshold: '100'
+      query: sum(rate(http_requests_total{job="keda-worker"}[1m]))

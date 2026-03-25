@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/vasudevchavan/kubecaps/pkg/types"
 
@@ -140,23 +141,43 @@ func parseCPU(s string) float64 {
 	return 0
 }
 
-// parseMemory parses a memory string (e.g., "128Mi", "1Gi") to bytes.
+// parseMemory parses a memory string (e.g., "128Mi", "1Gi", "1G", "1M") to bytes.
+// parseMemory parses a memory string (e.g., "128Mi", "1Gi", "1G", "1M") to bytes.
 func parseMemory(s string) float64 {
 	if s == "" {
 		return 0
 	}
 	var val float64
-	if n, _ := fmt.Sscanf(s, "%fGi", &val); n == 1 {
+
+	// Binary suffixes (Powers of 1024)
+	if strings.HasSuffix(s, "Gi") {
+		fmt.Sscanf(s, "%fGi", &val)
 		return val * 1024 * 1024 * 1024
 	}
-	if n, _ := fmt.Sscanf(s, "%fMi", &val); n == 1 {
+	if strings.HasSuffix(s, "Mi") {
+		fmt.Sscanf(s, "%fMi", &val)
 		return val * 1024 * 1024
 	}
-	if n, _ := fmt.Sscanf(s, "%fKi", &val); n == 1 {
+	if strings.HasSuffix(s, "Ki") {
+		fmt.Sscanf(s, "%fKi", &val)
 		return val * 1024
 	}
-	if n, _ := fmt.Sscanf(s, "%f", &val); n == 1 {
-		return val
+
+	// Decimal suffixes (Powers of 1000)
+	if strings.HasSuffix(s, "G") {
+		fmt.Sscanf(s, "%fG", &val)
+		return val * 1000 * 1000 * 1000
 	}
-	return 0
+	if strings.HasSuffix(s, "M") {
+		fmt.Sscanf(s, "%fM", &val)
+		return val * 1000 * 1000
+	}
+	if strings.HasSuffix(s, "K") {
+		fmt.Sscanf(s, "%fK", &val)
+		return val * 1000
+	}
+
+	// Raw bytes
+	fmt.Sscanf(s, "%f", &val)
+	return val
 }

@@ -46,8 +46,14 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to connect to Prometheus: %w", err)
 	}
 
+	// Load config
+	config, err := globalFlags.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
 	// Create prediction engine
-	engine := predictor.NewEngine(promClient)
+	engine := predictor.NewEngine(promClient, config)
 
 	// If a specific workload is provided, analyze just that one
 	if len(args) > 0 {

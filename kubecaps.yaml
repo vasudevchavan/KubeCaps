@@ -1,0 +1,52 @@
+# KubeCaps Optimization Configuration (Production-Grade)
+# Use this file to tune the AI prediction engine's cost vs. risk model.
+
+optimization:
+  # --- Cost Weights ---
+  # Relative cost of 1 CPU core
+  cpuWeight: 1.0
+  # Relative cost of 1 GB of memory
+  memoryWeight: 1.2
+
+  # --- Risk Penalties ---
+  # Base cost penalty for CPU throttling risk. 
+  # Higher values make the engine more conservative (higher requests).
+  cpuRiskPenalty: 10.0
+  # Base cost penalty for OOM (Out Of Memory) risk.
+  # Higher values increase memory requests to avoid application crashes.
+  memoryRiskPenalty: 50.0
+
+  # --- Failure Amplification ---
+  # Multiplier applied if actual OOM events are detected in Prometheus history.
+  oomMultiplier: 10.0
+  # Multiplier applied if significant CPU throttling is detected.
+  throttlingMultiplier: 10.0
+
+  # --- Safety Buffers & Margins ---
+  # Global safety buffer for CPU (1.2 = 20% buffer).
+  bufferMultiplier: 1.2
+  # Specialized safety margin for Memory (1.3 = 30% buffer).
+  # Memory needs a higher buffer because OOM results in crashes, while CPU only causes throttling.
+  memorySafetyMargin: 1.3
+  # Extra headroom for application startup/warmup spikes (1.5 = 50% extra limit headroom).
+  startupBufferMultiplier: 1.5
+
+  # --- Percentile-Based Targets ---
+  # Percentile of historical usage to use as a baseline for CPU optimization (0.95 = P95).
+  targetCPUPercentile: 0.95
+  # Percentile of historical usage to use as a baseline for Memory optimization (0.99 = P99).
+  targetMemoryPercentile: 0.99
+
+  # --- Behavioral Awareness ---
+  # Extra multiplier for risk penalties if the workload is classified as "Bursty".
+  burstinessWeight: 1.5
+  # Influences how sensitive the engine is to autoscaling interactions.
+  # Higher values keep requests higher to prevent HPA flapping.
+  scalingSensitivity: 1.2
+  # Sensitivity to latency/SLA requirements. Amplifies CPU risk penalty to avoid any throttling.
+  latencySensitivity: 1.5
+
+  # --- Scheduling & Bounds ---
+  # Minimum resource bounds to prevent shrinking workloads too much.
+  minCPU: 50     # millicores (0.05 CPU)
+  minMemory: 64  # MB

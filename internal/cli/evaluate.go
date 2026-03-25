@@ -127,41 +127,86 @@ func evaluateWorkload(ctx context.Context, k8sClient *k8s.Client, promClient *pr
 	}
 	result.KEDAConfig = kedaConfig
 
-	// Run evaluators
+	// Run evaluators with proper error handling
 	hpaEval := evaluator.NewHPAEvaluator(promClient)
-	hpaScore, hpaInsights, hpaRisks, _ := hpaEval.Evaluate(ctx, workload, hpaConfig, globalFlags.TimeWindowHours)
-	result.Scores = append(result.Scores, hpaScore)
-	result.Insights = append(result.Insights, hpaInsights...)
-	result.Risks = append(result.Risks, hpaRisks...)
+	hpaScore, hpaInsights, hpaRisks, err := hpaEval.Evaluate(ctx, workload, hpaConfig, globalFlags.TimeWindowHours)
+	if err != nil {
+		fmt.Printf("⚠️  Warning: HPA evaluation failed: %v\n", err)
+		// Add a warning insight instead of failing completely
+		result.Insights = append(result.Insights, types.Insight{
+			Severity:    "warning",
+			Category:    "evaluation",
+			Title:       "HPA Evaluation Failed",
+			Description: fmt.Sprintf("Could not complete HPA evaluation: %v", err),
+		})
+	} else {
+		result.Scores = append(result.Scores, hpaScore)
+		result.Insights = append(result.Insights, hpaInsights...)
+		result.Risks = append(result.Risks, hpaRisks...)
+	}
 
 	vpaEval := evaluator.NewVPAEvaluator(promClient)
-	vpaScore, vpaInsights, vpaRisks, _ := vpaEval.Evaluate(ctx, workload, vpaConfig, globalFlags.TimeWindowHours)
-	result.Scores = append(result.Scores, vpaScore)
-	result.Insights = append(result.Insights, vpaInsights...)
-	result.Risks = append(result.Risks, vpaRisks...)
+	vpaScore, vpaInsights, vpaRisks, err := vpaEval.Evaluate(ctx, workload, vpaConfig, globalFlags.TimeWindowHours)
+	if err != nil {
+		fmt.Printf("⚠️  Warning: VPA evaluation failed: %v\n", err)
+		result.Insights = append(result.Insights, types.Insight{
+			Severity:    "warning",
+			Category:    "evaluation",
+			Title:       "VPA Evaluation Failed",
+			Description: fmt.Sprintf("Could not complete VPA evaluation: %v", err),
+		})
+	} else {
+		result.Scores = append(result.Scores, vpaScore)
+		result.Insights = append(result.Insights, vpaInsights...)
+		result.Risks = append(result.Risks, vpaRisks...)
+	}
 
 	kedaEval := evaluator.NewKEDAEvaluator(promClient)
-	kedaScore, kedaInsights, kedaRisks, _ := kedaEval.Evaluate(ctx, workload, kedaConfig, globalFlags.TimeWindowHours)
-	result.Scores = append(result.Scores, kedaScore)
-	result.Insights = append(result.Insights, kedaInsights...)
-	result.Risks = append(result.Risks, kedaRisks...)
+	kedaScore, kedaInsights, kedaRisks, err := kedaEval.Evaluate(ctx, workload, kedaConfig, globalFlags.TimeWindowHours)
+	if err != nil {
+		fmt.Printf("⚠️  Warning: KEDA evaluation failed: %v\n", err)
+		result.Insights = append(result.Insights, types.Insight{
+			Severity:    "warning",
+			Category:    "evaluation",
+			Title:       "KEDA Evaluation Failed",
+			Description: fmt.Sprintf("Could not complete KEDA evaluation: %v", err),
+		})
+	} else {
+		result.Scores = append(result.Scores, kedaScore)
+		result.Insights = append(result.Insights, kedaInsights...)
+		result.Risks = append(result.Risks, kedaRisks...)
+	}
 
 	// Run correlation analysis
 	corrAnalyzer := evaluator.NewCorrelationAnalyzer(promClient)
-	_, corrInsights, _ := corrAnalyzer.Analyze(ctx, workload, globalFlags.TimeWindowHours)
-	result.Insights = append(result.Insights, corrInsights...)
+	_, corrInsights, err := corrAnalyzer.Analyze(ctx, workload, globalFlags.TimeWindowHours)
+	if err != nil {
+		fmt.Printf("⚠️  Warning: Correlation analysis failed: %v\n", err)
+	} else {
+		result.Insights = append(result.Insights, corrInsights...)
+	}
 
 	// Run risk detection
 	riskDetector := evaluator.NewRiskDetector(promClient)
-	additionalRisks, _ := riskDetector.DetectRisks(ctx, workload, globalFlags.TimeWindowHours)
-	result.Risks = append(result.Risks, additionalRisks...)
+	additionalRisks, err := riskDetector.DetectRisks(ctx, workload, globalFlags.TimeWindowHours)
+	if err != nil {
+		fmt.Printf("⚠️  Warning: Risk detection failed: %v\n", err)
+	} else {
+		result.Risks = append(result.Risks, additionalRisks...)
+	}
 
 	// Calculate overall score
 	scorer := evaluator.NewScorer()
 	result.OverallScore = scorer.CalculateOverallScore(result.Scores)
 
+	// Load config
+	config, err := globalFlags.LoadConfig()
+	if err != nil {
+		fmt.Printf("⚠️  Warning: Failed to load config, using defaults: %v\n", err)
+	}
+
 	// Get resource recommendation
-	engine := predictor.NewEngine(promClient)
+	engine := predictor.NewEngine(promClient, config)
 	rec, err := engine.PredictResources(ctx, workload, globalFlags.TimeWindowHours)
 	if err == nil {
 		result.Recommendation = rec
