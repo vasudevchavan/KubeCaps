@@ -108,6 +108,58 @@ kubecaps ai my-app --prometheus-url http://prometheus:9090 -o json
   - Validates KEDA polling intervals and trigger thresholds
   - Provides AI-driven insights for autoscaler tuning
 
+**Example Output:**
+```bash
+$ ./bin/kubecaps ai --prometheus-url=http://localhost:9090 nginx-deployment-b6d4bbc6b-599kn -n default --verbose
+🤖 AI Analysis for Deployment/nginx-deployment (default)
+
+🔍 Anomaly Detection
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ No CPU anomalies detected
+
+✅ No memory anomalies detected
+
+🧬 Workload DNA Profile
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  Warning: Could not generate DNA profile: insufficient data points: need at least 100, got 8
+⚙️  Autoscaler Correlation Analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  🧮 KubeCaps Optimization Math (Verbose):
+
+     CPU Strategy:        Baseline(P95: 0.000 cores) → Optimized for risk up to Peak(0.000)*1.4x
+     CPU Risk Penalty:    10.0 (Lambda) * 1.5 (SLA) = 15.0 (Total Penalty)
+     Mem Strategy:        Baseline(P99: 3.8 MBi) → Optimized for risk up to Peak(3.8 MBi)*1.6x
+     Mem Risk Penalty:    30.0 (Lambda) = 30.0 (Total Penalty)
+```
+
+**Additional Example:**
+```bash
+$ ./bin/kubecaps ai --prometheus-url=http://localhost:9090 nginx-deployment-b6d4bbc6b-599kn -n default --verbose
+🤖 AI Analysis for Deployment/nginx-deployment (default)
+
+🔍 Anomaly Detection
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ No CPU anomalies detected
+
+✅ No memory anomalies detected
+
+🧬 Workload DNA Profile
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  Warning: Could not generate DNA profile: insufficient data points: need at least 100, got 8
+⚙️  Autoscaler Correlation Analysis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  🧮 KubeCaps Optimization Math (Verbose):
+
+     CPU Strategy:        Baseline(P95: 0.000 cores) → Optimized for risk up to Peak(0.000)*1.4x
+     CPU Risk Penalty:    10.0 (Lambda) * 1.5 (SLA) = 15.0 (Total Penalty)
+     Mem Strategy:        Baseline(P99: 3.8 MBi) → Optimized for risk up to Peak(3.8 MBi)*1.6x
+     Mem Risk Penalty:    30.0 (Lambda) = 30.0 (Total Penalty)
+```
+
 ### 4. Configuration & Customization (NEW! ⚙️)
 KubeCaps allows you to fine-tune its prediction engine through a YAML configuration file. This is especially useful for adjusting the "Cost vs. Risk" trade-offs for your specific workloads.
 
